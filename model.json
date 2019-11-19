@@ -1,0 +1,51 @@
+{
+  "id": "flightservice",
+  "description": "Drives Load for Versioning Demo",
+  "defaultProperties": {
+    "scheme": "http",
+    "host": "demo25-test.apigee.net",
+    "headers": {
+      "Accept": "application/json"
+    }
+  },
+  "geoDistribution": 1,
+  "initialContext": {
+    "apikeys": [ 
+      ["1SAJigN0YAmAd9Go3NyjfNJgDBAKXmW8", 90],
+      ["QUfFupmQ1QC4BljvCileTkWJEpgCkXAK", 78],
+      ["dCpdjCD1Oaj04m0y7NaHcP188cbVJTST", 53],
+      ["gAMGB4Pd1bDpefGXiB0LvjjZvjMqtXUq", 54],
+      ["P9X8cCq01JdGCkBhI4IT3cj6DMIAkPzB", 68],
+      ["XTVGqHvAKC1DY4xNStw3FHP3cAuOXDrA", 5]
+    ],
+     "services": ["flights","profile","airports","flightdetails","flighthistory","weather","flightdepartdetails","foobar"]
+  },
+  "invocationsPerHour": [
+    3954, 3949, 951, 945, 991, 930, 9961, 490,
+    3340, 539, 5441, 6442, 8434, 2731, 4327, 5322,
+    9235, 4994, 3881, 4322, 2425, 4223, 2340, 4223],
+  "variationByDayOfWeek" : [
+        0.8, 1.0, 1.05, 1.26, 0.83, 1.37, 1.1
+  ],
+  "sequences": [{
+    "iterations": "Math.floor(Math.random() * 5) + 2",
+    "requests": [{
+      "imports": [{
+        "description": "setup the weighted random selector",
+        "fn": "function(ctx) {return (ctx.kwrs)? ctx.kwrs : new WeightedRandomSelector(ctx.apikeys);}",
+        "valueRef": "kwrs"
+      }, {
+        "description": "choose a key",
+        "fn": "function(ctx) {return ctx.kwrs.select()[0];}",
+        "valueRef": "apikey"
+      },{
+        "description": "choose a service",
+        "fn": "function(ctx) {return  ctx.services[Math.floor(Math.random() * ctx.services.length)];}",
+        "valueRef": "service"
+      }],
+      "url": "/service/{service}?apikey={apikey}",
+      "method": "get",
+      "delayBefore": 0
+    }]
+  }]
+}
