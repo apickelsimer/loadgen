@@ -79,8 +79,8 @@ var assert = require('assert'),
     request = require('./slimNodeHttpClient.js'),
     express = require('express'),
     fs = require('fs'),
-    apigee = require('apigee-access'),
-    cache = apigee.getCache(undefined, {scope: 'application'}), // get the default cache
+    //apigee = require('apigee-access'),
+    //cache = apigee.getCache(undefined, {scope: 'application'}), // get the default cache
     gStatusCacheKey, gLoglevelCacheKey,
     WeightedRandomSelector = require('./weightedRandomSelector.js'),
     app = express(),
@@ -893,11 +893,11 @@ function initializeJobRun(context) {
   gStatus.loglevel = context.job.loglevel || gDefaultLogLevel;
 
   // on initial startup, put the loglevel into the cache
-  cache.put(gLoglevelCacheKey, '' + gStatus.loglevel, 18640000, function(e) {});
+  //cache.put(gLoglevelCacheKey, '' + gStatus.loglevel, 18640000, function(e) {});
 
   // and put the run status into the cache as well.
   // (deploy implies start running)
-  cache.put(gStatusCacheKey, "running", 8640000, function(e){});
+  //cache.put(gStatusCacheKey, "running", 8640000, function(e){});
 
   // if (gStatus.status == "pending-stop") {
   //   log.write(gStatus.jobId + ' no launch - pending stop');
@@ -1022,6 +1022,8 @@ function setWakeup(context) {
   setTimeout(function () {
     log.write(2, jobid + ' awake');
     delete gStatus.times.wake;
+
+    /*
     cache.get(gLoglevelCacheKey, function(e, value) {
       if (e) {
         log.write(2, jobid + ' cannot retrieve loglevel. ' + e);
@@ -1063,6 +1065,26 @@ function setWakeup(context) {
         }
       });
     });
+
+    */
+    var value; var e;
+    gStatus.cachedStatus = value || '-none-';
+        if (e || value != "stopped") {
+          // failed to get a value, or value is not stopped
+          q({job:job})
+            .then(initializeJobRun)
+            .done(function(){},
+                  function(e){
+                    log.write(2,'unhandled error: ' + e);
+                    log.write(2, e.stack);
+                  });
+        }
+        else {
+          // value is stopped. Sleep one cycle, then check again.
+          context.state.start = new Date(); // now
+          q(context).then(setWakeup, trackFailure);
+        }
+
   }, sleepTimeInMs);
   return context;
 }
@@ -1114,7 +1136,7 @@ app.get('/status', function(request, response) {
   response.header('Content-Type', 'application/json');
   gStatus.times.current = (new Date()).toString();
   payload = copyHash(gStatus);
-  cache.get(gStatusCacheKey, function(e, value) {
+  /*cache.get(gStatusCacheKey, function(e, value) {
     if (e) {
       payload.error = true;
       payload.cacheException = e.toString();
@@ -1125,6 +1147,7 @@ app.get('/status', function(request, response) {
       response.send(200, JSON.stringify(payload, null, 2) + "\n");
     }
   });
+  */
 });
 
 app.post('/control', function(request, response) {
@@ -1133,7 +1156,7 @@ app.post('/control', function(request, response) {
       action = request.body.action || request.query.action,
       loglevel = request.body.loglevel || request.query.loglevel,
       putCallback = function(e) {
-        cache.get(gStatusCacheKey, function(e, value) {
+        /*cache.get(gStatusCacheKey, function(e, value) {
           if (e) {
             payload.error = true;
             payload.cacheException = e.toString();
@@ -1144,6 +1167,7 @@ app.post('/control', function(request, response) {
             response.send(200, JSON.stringify(payload, null, 2) + "\n");
           }
         });
+        */
       };
 
   response.header('Content-Type', 'application/json');
@@ -1166,7 +1190,7 @@ app.post('/control', function(request, response) {
     }
     // coerce
     loglevel = Math.max(0, Math.min(10, parseInt(loglevel, 10)));
-    cache.put(gLoglevelCacheKey, '' + loglevel, 18640000, function(e) {
+    /*cache.put(gLoglevelCacheKey, '' + loglevel, 18640000, function(e) {
       if (e) {
         payload.error = true;
         payload.cacheException = e.toString();
@@ -1177,9 +1201,10 @@ app.post('/control', function(request, response) {
         response.send(200, JSON.stringify(payload, null, 2) + "\n");
       }
     });
+    */
   }
   else {
-    cache.get(gStatusCacheKey, function(e, value) {
+    /*cache.get(gStatusCacheKey, function(e, value) {
       if (e) {
         payload.error = true;
         payload.cacheFail = true;
@@ -1213,6 +1238,7 @@ app.post('/control', function(request, response) {
         }
       }
     });
+    */
   }
 });
 
