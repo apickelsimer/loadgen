@@ -18,7 +18,8 @@
       ["P9X8cCq01JdGCkBhI4IT3cj6DMIAkPzB", 68],
       ["XTVGqHvAKC1DY4xNStw3FHP3cAuOXDrA", 5]
     ],
-     "services": ["flights","profile","airports","flightdetails","flighthistory","weather","flightdepartdetails","foobar"]
+     "services": ["flights","profile","airports","flightdetails","flighthistory","weather","flightdepartdetails","foobar"],
+     "verbs": ["post","put","delete","patch","options"]
   },
   "invocationsPerHour": [
     3954, 3949, 951, 945, 991, 930, 9961, 490,
@@ -46,6 +47,33 @@
       "url": "/service/{service}?apikey={apikey}",
       "method": "get",
       "delayBefore": 0
+    }]
+  },
+  {
+    "iterations": "Math.floor(Math.random() * 2) + 1",
+    "requests": [{
+      "imports": [{
+        "description": "setup the weighted random selector",
+        "fn": "function(ctx) {return (ctx.kwrs)? ctx.kwrs : new WeightedRandomSelector(ctx.apikeys);}",
+        "valueRef": "kwrs"
+      }, {
+        "description": "choose a key",
+        "fn": "function(ctx) {return ctx.v1kwrs.select()[0];}",
+        "valueRef": "v1apikey"
+      },{
+        "description": "choose a symbol",
+        "fn": "function(ctx) {return  ctx.symbols[Math.floor(Math.random() * ctx.symbols.length)];}",
+        "valueRef": "symbol"
+      },
+      {
+        "description": "choose a verb",
+        "fn": "function(ctx) {return  ctx.verbs[Math.floor(Math.random() * ctx.verbs.length)];}",
+        "valueRef": "verb"
+      }],
+      "url": "/service/{service}?apikey={apikey}",
+      "method": "post",
+      "delayBefore": 0,
+      "payload": "{\"key\":\"value\"}"
     }]
   }]
 }

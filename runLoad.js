@@ -95,7 +95,7 @@ var assert = require('assert'),
     isUrl = new RegExp('^https?://[-a-z0-9\\.]+($|/)', 'i'),
     wantMasking = true,
     gModel,
-    gDefaultLogLevel = 2,
+    gDefaultLogLevel = 4,
     gStatus = {
       loadGenVersion: 'Friday,  5 February 2016, 18:38',
       times : {
@@ -729,8 +729,13 @@ function invokeOneRequest(context) {
     log.write(3, method.toUpperCase() + ' ' + reqOptions.uri);
 
     if (method === "post" || method === "put") {
-      actualPayload = expandEmbeddedTemplates(ctx, req.payload);
+      log.write(3, "payload = " + req.payload);
+      //actualPayload = expandEmbeddedTemplates(ctx, req.payload);
+      actualPayload = req.payload;  //dont use templating on JSON payloads
+
       var t2 = Object.prototype.toString.call(actualPayload);
+      
+
       if (t2 == '[object String]') {
         reqOptions.body = actualPayload;
         // set header explicitly if not already set
@@ -748,7 +753,7 @@ function invokeOneRequest(context) {
       request(reqOptions, respCallback);
     }
     else {
-      assert.fail(r.method,"get|post|put|delete", "unsupported method", "<>");
+      assert.fail(r.method,"get|post|put|delete|patch|options", "unsupported method", "<>");
     }
     return deferredPromise.promise;
   });
