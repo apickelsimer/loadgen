@@ -2,7 +2,7 @@
   "id": "flightservice",
   "description": "Drives Load for Versioning Demo",
   "defaultProperties": {
-    "scheme": "http",
+    "scheme": "https",
     "host": "demo25-test.apigee.net",
     "headers": {
       "Accept": "application/json"
@@ -43,8 +43,12 @@
         "description": "choose a service",
         "fn": "function(ctx) {return  ctx.services[Math.floor(Math.random() * ctx.services.length)];}",
         "valueRef": "service"
+      },{
+        "description": "choose a protocol",
+        "fn": "function(ctx) {return  Math.random('http','https')}",
+        "valueRef": "protocol"
       }],
-      "url": "/service/{service}?apikey={apikey}",
+      "url": "{protocol}://{host}/service/{service}?apikey={apikey}",
       "method": "get",
       "delayBefore": 0
     }]
