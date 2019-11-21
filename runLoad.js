@@ -88,8 +88,9 @@ var assert = require('assert'),
     oneHourInMs = 60 * 60 * 1000,
     minSleepTimeInMs = 800,
     ipForCities = 'https://us-central1-ryanmac-demos.cloudfunctions.net/getIP',
-    userAgents = 'https://us-central1-ryanmac-demos.cloudfunctions.net/getUserAgent',
+    userAgents = 'https://us-central1-ryanmac-demos.cloudfunctions.net/getUserAgen',
     modelConfig = 'https://storage.googleapis.com/fazio-259604.appspot.com/model.json',
+    localConfig = 'model.json',
     //citiesAndPopulation = 'https://api.usergrid.com/dino/loadgen1/cities',
     log = new Log(),
     isUrl = new RegExp('^https?://[-a-z0-9\\.]+($|/)', 'i'),
@@ -569,6 +570,7 @@ function invokeOneRequest(context) {
         sequence = job.sequences[state.sequence],
         req = sequence.requests[state.request],
         url = req.url || req.pathSuffix,
+        method = req.method,
         match = re.exec(url),
         actualPayload,
         headers = (job.defaultProperties && job.defaultProperties.headers) ? job.defaultProperties.headers : {},
@@ -658,7 +660,7 @@ function invokeOneRequest(context) {
     p = p.then(function(ctx) {
         var deferredPromise = q.defer(),
             city,
-            method = (req.method) ? req.method.toLowerCase() : "get",
+            method = (req.method) ? expandEmbeddedTemplates(ctx, req.method) : "get",
             respCallback = function(e, httpResp, body) {
                 var i, L, ex, obj, aIndex;
                 gStatus.nRequests++;
@@ -781,7 +783,7 @@ function invokeOneRequest(context) {
         } else if (method === "get" || method === "delete") {
             request(reqOptions, respCallback);
         } else {
-            assert.fail(r.method, "get|post|put|delete|patch|options", "unsupported method", "<>");
+            assert.fail(r.method, "get|post|put|delete", "unsupported method", "<>");
         }
         return deferredPromise.promise;
     });
@@ -958,9 +960,7 @@ function stopJob(){
   log.write(2,"Stopping service....");
   while (gStatus.status != "stopped") {
   gStatus.status = "stopped";
-}
-    
-    
+  } 
 }
 
 function startJob(context){
@@ -1150,10 +1150,19 @@ function setWakeup(context) {
 
 async function kickoff() {
     try {
-        log.write(2, 'lets get config from endpoint to kickoff first job');
-        gModel = await retrieveConfigAsync();
-        console.log("Loaded the following model:/n " + gModel);
-        gModel = JSON.parse(gModel);
+        
+        //look for local config first
+        if (fs.existsSync(localConfig)) {
+          console.log('config: local');
+          gModel = JSON.parse(fs.readFileSync(localConfig, "utf8"));
+        }
+        else { //pull from gcs
+          console.log('config: external');
+          gModel = await retrieveConfigAsync();
+          gModel = JSON.parse(gModel);
+        }
+
+        console.log("Loaded the following model:\n" + JSON.stringify(gModel) + "\n");
 
         if (!gModel.id) {
             throw "you must specify a unique id for the job";
