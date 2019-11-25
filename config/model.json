@@ -1,0 +1,175 @@
+{
+	"id": "loadgen",
+	"description": "loadgen",
+	"defaultProperties": {
+		"headers": {
+			"Accept": "application/json"
+		}
+	},
+	"geoDistribution": 1,
+	"initialContext": {
+		"host": "demo25-test.apigee.net",
+		"apikeys": [
+			["1SAJigN0YAmAd9Go3NyjfNJgDBAKXmW8", 50],
+			["QUfFupmQ1QC4BljvCileTkWJEpgCkXAK", 35],
+			["dCpdjCD1Oaj04m0y7NaHcP188cbVJTST", 45],
+			["gAMGB4Pd1bDpefGXiB0LvjjZvjMqtXUq", 65],
+			["P9X8cCq01JdGCkBhI4IT3cj6DMIAkPzB", 15]
+		],
+		"protocols": [
+			["https", 95],
+			["http", 5]
+		],
+		"verbs": [
+			["get", 85],
+			["post", 5],
+			["put", 5],
+			["delete", 5]
+		],
+		"version": [
+			"v1"
+		],
+		"sequenceEndpoints": [
+			["flights", "profile", "airports", "flightdetails", "flighthistory", "weather", "flightdepartdetails"],
+			["products", "payments", "orders", "shipping", "tax", "shoppingcart", "customers"],
+			["employees", "timesheets", "offices"]
+		],
+		"invocationsPerHour": [
+			39554, 5399, 5951, 9545, 9591, 5930, 9961, 8490,
+			3340, 5939, 5441, 6442, 8434, 2731, 4327, 5322,
+			9235, 4994, 3881, 4322, 2425, 4223, 2340, 4223
+		],
+		"variationByDayOfWeek": [
+			0.8, 1.0, 1.05, 1.26, 0.83, 1.37, 1.1
+    ]
+  },
+		"sequences": [
+      {
+				"iterations": "Math.floor(Math.random() * 5) + 1",
+				"requests": [{
+					"imports": [{
+							"description": "setup the weighted random selector",
+							"fn": "function(ctx) {return (ctx.kwrs)? ctx.kwrs : new WeightedRandomSelector(ctx.apikeys);}",
+							"valueRef": "kwrs"
+						},
+						{
+							"description": "setup the weighted random selector",
+							"fn": "function(ctx) {return (ctx.pwrs)? ctx.pwrs : new WeightedRandomSelector(ctx.protocols);}",
+							"valueRef": "pwrs"
+						},
+						{
+							"description": "setup the weighted random selector",
+							"fn": "function(ctx) {return (ctx.vwrs)? ctx.vwrs : new WeightedRandomSelector(ctx.verbs);}",
+							"valueRef": "vwrs"
+						},
+						{
+							"description": "choose a key",
+							"fn": "function(ctx) {return ctx.kwrs.select()[0];}",
+							"valueRef": "apikey"
+						},
+						{
+							"description": "choose a random endpoint",
+							"fn": "function(ctx) {return  ctx.sequenceEndpoints[0][Math.floor(Math.random() * ctx.sequenceEndpoints.length)];}",
+							"valueRef": "endpoint"
+						},
+						{
+							"description": "choose a protocol",
+							"fn": "function(ctx) {return  ctx.pwrs.select()[0];}",
+							"valueRef": "protocol"
+						}, {
+							"description": "choose a verb",
+							"fn": "function(ctx) {return  ctx.vwrs.select()[0];}",
+							"valueRef": "verb"
+						}
+					],
+					"url": "{protocol}://{host}/{version}/travel/{endpoint}?apikey={apikey}",
+					"method": "{verb}",
+					"payload": "{'key':'value'}",
+					"delayBefore": 0
+				}]
+			},
+			{
+				"iterations": "Math.floor(Math.random() * 5) + 1",
+				"requests": [{
+					"imports": [{
+							"description": "setup the weighted random selector",
+							"fn": "function(ctx) {return (ctx.kwrs)? ctx.kwrs : new WeightedRandomSelector(ctx.apikeys);}",
+							"valueRef": "kwrs"
+						},{
+							"description": "setup the weighted random selector",
+							"fn": "function(ctx) {return (ctx.pwrs)? ctx.pwrs : new WeightedRandomSelector(ctx.protocols);}",
+							"valueRef": "pwrs"
+						},{
+							"description": "setup the weighted random selector",
+							"fn": "function(ctx) {return (ctx.vwrs)? ctx.vwrs : new WeightedRandomSelector(ctx.verbs);}",
+							"valueRef": "vwrs"
+						},{
+							"description": "choose a key",
+							"fn": "function(ctx) {return ctx.kwrs.select()[0];}",
+							"valueRef": "apikey"
+						},{
+							"description": "choose a random endpoint",
+							"fn": "function(ctx) {return  ctx.sequenceEndpoints[1][Math.floor(Math.random() * ctx.sequenceEndpoints.length)];}",
+							"valueRef": "endpoint"
+						},{
+							"description": "choose a protocol",
+							"fn": "function(ctx) {return  ctx.pwrs.select()[0];}",
+							"valueRef": "protocol"
+						},{
+							"description": "choose a verb",
+							"fn": "function(ctx) {return  ctx.vwrs.select()[0];}",
+							"valueRef": "verb"
+						}
+					],
+					"url": "{protocol}://{host}/{version}/retail/{endpoint}?apikey={apikey}",
+					"method": "{verb}",
+					"payload": "{'key':'value'}",
+					"delayBefore": 0
+				}]
+			},
+			{
+				"iterations": "Math.floor(Math.random() * 5) + 1",
+				"requests": [{
+					"imports": [{
+							"description": "setup the weighted random selector",
+							"fn": "function(ctx) {return (ctx.kwrs)? ctx.kwrs : new WeightedRandomSelector(ctx.apikeys);}",
+							"valueRef": "kwrs"
+						},
+						{
+							"description": "setup the weighted random selector",
+							"fn": "function(ctx) {return (ctx.pwrs)? ctx.pwrs : new WeightedRandomSelector(ctx.protocols);}",
+							"valueRef": "pwrs"
+						},
+						{
+							"description": "setup the weighted random selector",
+							"fn": "function(ctx) {return (ctx.vwrs)? ctx.vwrs : new WeightedRandomSelector(ctx.verbs);}",
+							"valueRef": "vwrs"
+						},
+						{
+							"description": "choose a key",
+							"fn": "function(ctx) {return ctx.kwrs.select()[0];}",
+							"valueRef": "apikey"
+						},
+						{
+							"description": "choose a random endpoint",
+							"fn": "function(ctx) {return  ctx.sequenceEndpoints[2][Math.floor(Math.random() * ctx.sequenceEndpoints.length)];}",
+							"valueRef": "endpoint"
+						},
+						{
+							"description": "choose a protocol",
+							"fn": "function(ctx) {return  ctx.pwrs.select()[0];}",
+							"valueRef": "protocol"
+						}, {
+							"description": "choose a verb",
+							"fn": "function(ctx) {return  ctx.vwrs.select()[0];}",
+							"valueRef": "verb"
+						}
+					],
+					"url": "{protocol}://{host}/{version}/internal/{endpoint}?apikey={apikey}",
+					"method": "{verb}",
+					"payload": "{'key':'value'}",
+					"delayBefore": 0
+				}]
+			}
+    ]
+}
