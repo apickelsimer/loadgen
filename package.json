@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "dependencies": {
     "assert": "0.4.9",
-    "express": "^4.17.1",
+    "express": "^4.18.2",
     "json-stringify-safe": "5.0.0",
     "q": "0.9.7",
     "yargs": "^15.0.2"
