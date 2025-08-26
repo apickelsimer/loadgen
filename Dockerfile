@@ -1,4 +1,4 @@
-FROM node:10
+FROM node:18
 
 # Create app directory
 WORKDIR /usr/src/app
@@ -20,7 +20,7 @@ EXPOSE 8080
 ENV config model.json
 ENV loglevel 0
 
-CMD ["sh", "-c", "node app --config ${config} --loglevel ${loglevel}"]
+CMD ["sh", "-c", "node app.js --config ${config} --loglevel ${loglevel}"]
 
 ## example usage for a local config
 ## docker run -p 8080:8080 -d apickelsimer/loadgen -e config=model.json -v $PWD/config/model.json:/usr/src/app/config/model.json
