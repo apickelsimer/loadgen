@@ -74,71 +74,68 @@
 //
 // ------------------------------------------------------------------
 
-var argv = require('yargs')
+const { hideBin } = require('yargs/helpers');
+const yargs = require('yargs/yargs');
+const argv = yargs(hideBin(process.argv))
     .usage('Usage: $0 --config [path] --loglevel [0-10]')
-    .demandOption(['config'])
+    .option('config', {
+        describe: 'Path to the configuration model file (local or URL).',
+        demandOption: true,
+        type: 'string'
+    })
+    .option('loglevel', {
+        describe: 'Logging level (0=silent, 10=verbose).',
+        default: 2,
+        type: 'number'
+    })
     .argv;
 
-var assert = require('assert'),
-    http = require('http'),
-    q = require('q'),
-    request = require('./lib/slimNodeHttpClient.js'),
-    express = require('express'),
-    fs = require('fs'),
-    gStatusCacheKey, gLoglevelCacheKey,
-    WeightedRandomSelector = require('./lib/weightedRandomSelector.js'),
-    app = express(),
-    globalTimeout = 8000, // in ms
-    defaultRunsPerHour = 600,
-    oneHourInMs = 60 * 60 * 1000,
-    minSleepTimeInMs = 0,
-    ipForCities = 'https://us-central1-ryanmac-demos.cloudfunctions.net/getIP',
-    userAgents = 'https://us-central1-ryanmac-demos.cloudfunctions.net/getUserAgent',
-    model,
-    log = new Log(),
-    isUrl = new RegExp('^https?://[-a-z0-9\\.]+($|/)', 'i'),
-    wantMasking = true,
-    gModel,
-    gDefaultLogLevel = 0,
-    gStatus = {
-        loadGenVersion: 'Friday,  22 November 2019, 15:44',
+const assert = require('assert');
+const http = require('http');
+const express = require('express');
+const fs = require('fs');
+const { JSONPath } = require('jsonpath-plus');
+const WeightedRandomSelector = require('./lib/weightedRandomSelector.js');
+
+const app = express();
+const globalTimeout = 8000; // in ms
+const defaultRunsPerHour = 600;
+const oneHourInMs = 60 * 60 * 1000;
+const minSleepTimeInMs = 0;
+let model;
+const log = new Log();
+const isUrl = new RegExp('^https?://[-a-z0-9\\.]+($|/)', 'i');
+let wantMasking = true;
+let gModel;
+let gDefaultLogLevel = 0;
+const gStatus = {
+        loadGenVersion: '2.0.0 (2023-August-21)',
         times: {
-            start: (new Date()).toString(),
-            lastRun: (new Date()).toString(),
+            start: new Date().toString(),
+            lastRun: null,
         },
         nRequests: 0,
         jobId: '',
         description: '',
-        status: 'none',
+        status: 'initializing',
         responseCounts: {
             total: 0
         }
-    },
-    globals = {},
-    rStringChars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
-
-
-if (argv.config != null)
-{
-  model = argv.config;
-}
-else
-{
-  console.log('must pass configuration using --config param');
-}
-
-if (argv.loglevel != null)
-{
-    gDefaultLogLevel = argv.loglevel;
-}
-
-
-function Gaussian(mean, stddev) {
-    this.mean = mean;
-    this.stddev = stddev || mean * 0.1;
-    this.next = function() {
-        return this.stddev * normal() + 1 * mean;
     };
+const globals = {};
+const rStringChars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+
+model = argv.config;
+gDefaultLogLevel = argv.loglevel;
+gStatus.loglevel = gDefaultLogLevel;
+
+
+class Gaussian {
+    constructor(mean, stddev) {
+        this.mean = mean;
+        this.stddev = stddev || mean * 0.1;
+    }
 
     /*
        Function normal.
@@ -148,9 +145,8 @@ function Gaussian(mean, stddev) {
        Use the Box-Mulder (trigonometric) method, and discards one of the
        two generated random numbers.
     */
-
-    function normal() {
-        var u1 = 0,
+    normal() {
+        let u1 = 0,
             u2 = 0;
         while (u1 * u2 === 0) {
             u1 = Math.random();
@@ -158,18 +154,20 @@ function Gaussian(mean, stddev) {
         }
         return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
     }
+
+    next() {
+        return this.stddev * this.normal() + 1 * this.mean;
+    }
 }
 
-function Log() {}
-
-Log.prototype.write = function(level, str) {
-    var time = (new Date()).toString();
-    if (gStatus.loglevel >= level) {
-        console.log('[' + time.substr(11, 4) + '-' +
-            time.substr(4, 3) + '-' + time.substr(8, 2) + ' ' +
-            time.substr(16, 8) + '] ' + str);
-    }
-};
+class Log {
+  write(level, str) {
+      if (gStatus.loglevel >= level) {
+          const time = new Date().toISOString().replace(/T/, ' ').replace(/\..+/, '');
+          console.log(`[${time}] ${str}`);
+      }
+  }
+}
 
 function isNumber(n) {
     if (typeof n === 'undefined') {
@@ -209,18 +207,7 @@ function copyHash(obj) {
     return copy;
 }
 
-function trackFailure(e) {
-    if (e) {
-        log.write(0, 'failure: ' + e);
-        log.write(1, e.stack);
-        gStatus.lastError = {
-            message: e.stack.toString(),
-            time: (new Date()).toString()
-        };
-    } else {
-        log.write(0, 'unknown failure?');
-    }
-}
+// trackFailure is replaced by try/catch blocks in async functions.
 
 function getType(obj) {
     return Object.prototype.toString.call(obj);
@@ -264,73 +251,17 @@ function dayNumberToName(name) {
     return ix;
 }
 
-function retrieveCities(ctx) {
-    var deferredPromise = q.defer(),
-        options = {
-            timeout: 66000, // in ms
-            uri: citiesAndPopulation + '?limit=350',
-            method: 'get',
-            headers: {
-                'Accept': 'application/json',
-                'user-agent': 'SlimHttpClient/1.0'
-            }
-        };
-
-    log.write(8, 'retrieveCities');
-
-    request(options, function(e, httpResp, body) {
-        var a, type, cities;
-        if (e) {
-            log.write(2, 'retrieveCities, error: ' + e);
-        } else {
-            type = getType(body);
-            if (type === "[object String]") {
-                try {
-                    body = JSON.parse(body);
-                    cities = body.entities.map(function(elt) {
-                        return [elt, Number(elt.pop2010)];
-                    });
-                    globals.citySelector = new WeightedRandomSelector(cities);
-                } catch (exc1) {
-                    log.write(2, 'retrieveCities: cannot parse body :(');
-                }
-            }
-            log.write(8, 'retrieveCities done');
-        }
-        deferredPromise.resolve(ctx);
-    });
-    return deferredPromise.promise;
-}
-
-function retrieveConfigAsync(url) {
-    options = {
-        timeout: 16000, // in ms
-        uri: url,
-        method: 'get',
-        headers: {
-            'Accept': 'application/json',
-            'user-agent': 'SlimHttpClient/1.0'
-        }
-    };
-
-
-    return new Promise((resolve, reject) => {
-        request(options, function(e, httpResp, body) {
-            if (e) {
-                log.write(2, 'retrieveConfig, error: ' + e);
-            } else {
-                type = getType(body);
-                if (type === "[object String]") {
-                    try {
-                        resolve(body);
-                    } catch (exc1) {
-                        log.write(2, 'retrieveConfig: cannot parse body :(');
-                    }
-                }
-                log.write(8, 'retrieveConfig done');
-            }
-        });
-    });
+async function retrieveConfig(source) {
+    if (isUrl.test(source)) {
+        log.write(2, `Retrieving remote config from: ${source}`);
+        const response = await require('axios').get(source, { timeout: 16000 });
+        return response.data;
+    }
+    log.write(2, `Reading local config from: ${source}`);
+    if (!fs.existsSync(source)) {
+        throw new Error(`Cannot load local configuration: ${source}`);
+    }
+    return JSON.parse(fs.readFileSync(source, "utf8"));
 }
 
 function chooseRandomIpFromRecord(rec) {
@@ -362,31 +293,20 @@ function chooseRandomIpFromRecord(rec) {
     return null;
 }
 
-function contriveIpAddress(context) {
-
-    options = {
-        timeout: 16000, // in ms
-        uri: ipForCities,
-        method: 'get',
-        headers: {
-            'Accept': 'application/json',
-            'user-agent': 'SlimHttpClient/1.0'
-        }
-    };
-
-    deferred = q.defer();
-
-    request(options, function(e, httpResp, body) {
-        if (e) {
-            log.write(2, 'contriveIpAddress, error: ' + e);
-        } else {
-            log.write(2, 'contrivedIP = ' + body);
-            context.job.contrivedIp = body;
-        }
-        deferred.resolve(context);
-    });
-
-    return deferred.promise;
+async function contriveDataFromUrl(url, context, key) {
+    if (!url) {
+        log.write(5, `No URL provided for ${key}, skipping.`);
+        return context;
+    }
+    try {
+        log.write(8, `Contriving ${key} from ${url}`);
+        const response = await require('axios').get(url, { timeout: 16000 });
+        context.job[key] = response.data;
+        log.write(2, `Contrived ${key} = ${JSON.stringify(response.data)}`);
+    } catch (e) {
+        log.write(2, `contriveDataFromUrl (${key}), error: ${e.message}`);
+    }
+    return context;
 
 
     /*var city, ql, options, deferred;
@@ -455,358 +375,154 @@ function contriveIpAddress(context) {
     return deferred.promise;  */
 }
 
+// No-op, replaced by contriveDataFromUrl
 function contriveUserAgent(context) {
+    return context;
+}
 
-    options = {
-        timeout: 16000, // in ms
-        uri: userAgents,
-        method: 'get',
-        headers: {
-            'Accept': 'application/json',
-            'user-agent': 'SlimHttpClient/1.0'
+const generators = {
+    randomString: (length) => {
+        let result = '';
+        const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        for (let i = length > 0 ? length : 12; i > 0; --i) {
+            result += chars[Math.floor(Math.random() * chars.length)];
         }
-    };
+        return result;
+    },
+    randomName: () => {
+        const names = ['Ashish', 'Nikhil', 'Seshadri', 'Kyle', 'Jeff', 'Neha', 'Jin', 'Lewis', 'Fernando', 'Rajeev', 'Mary', 'Sophia', 'Rose', 'Julianna', 'Grace', 'Janice', 'Niko', 'Anish'];
+        return names[Math.floor(Math.random() * names.length)];
+    },
+    timestamp: () => Date.now()
+};
 
-    deferred = q.defer();
-
-    request(options, function(e, httpResp, body) {
-        if (e) {
-            log.write(2, 'contriveUserAgent, error: ' + e);
-        } else {
-            log.write(2, 'contrivedUserAgent = ' + body);
-            context.job.contrivedUserAgent = body;
-        }
-        deferred.resolve(context);
-    });
-
-    return deferred.promise;
-}
-
-function resolveNumeric(input) {
-    var I = input;
-    if (typeof input == "undefined") {
-        I = 1;
-    } else if (typeof input == "string") {
-        I = eval('(' + input + ')');
-    }
-    return I;
-}
-
-function evalTemplate(ctx, code) {
-    var src, f,
-        values = [],
-        names = [],
-        result,
-        extractContext = ctx.state.extracts;
-
-    // log.write('eval: ' + code);
-    // log.write('ctx: ' + JSON.stringify(extractContext, null, 2));
-    // TODO: cache this?
-    // create the fn signature
-    Object.keys(extractContext).forEach(function(prop) {
-        names.push(prop);
-        values.push(extractContext[prop]);
-    });
-
-    src = 'return ' + code + ';';
-    log.write(9, 'evalTemplate: ' + src);
-    try {
-        f = new Function(names.join(','), src);
-        // call the function with all its arguments
-        result = f.apply(null, values);
-    } catch (exc1) {
-        log.write(3, 'evalTemplate, exception: ' + exc1.toString());
-        result = '';
-    }
-    log.write(6, 'evalTemplate, result: ' + result);
-    return result;
-}
-
-/**
- * Replace templates in a single string.
- **/
-var rt_re1 = new RegExp('(.*)(?!{{){([^{}]+)(?!}})}(.*)'),
-    rt_re2 = new RegExp('(.*){{([^{}]+)}}(.*)'); // for double-curlies
-
-function replaceTemplatesInString(ctx, s) {
-    var newVal, match;
-
-    for (newVal = s, match = rt_re1.exec(newVal); match; match = rt_re1.exec(newVal)) {
-        newVal = match[1] + evalTemplate(ctx, match[2]) + match[3];
-    }
-    for (match = rt_re2.exec(newVal); match; match = rt_re2.exec(newVal)) {
-        newVal = match[1] + '{' + match[2] + '}' + match[3];
-    }
-    return newVal;
-}
-
-
-/**
- * expandEmbeddedTemplates walks through an object, replacing each embedded
- * template as appropriate. This is used to expand a templated payload.
- **/
-function expandEmbeddedTemplates(ctx, obj) {
-    var newObj,
-        type = Object.prototype.toString.call(obj),
-        x, i;
-
+function expandEmbeddedTemplates(context, obj) {
+    const type = getType(obj);
     if (type === "[object String]") {
-        newObj = replaceTemplatesInString(ctx, obj);
-    } else if (type === "[object Array]") {
-        // iterate
-        newObj = [];
-        for (i = 0; i < obj.length; i++) {
-            x = expandEmbeddedTemplates(ctx, obj[i]);
-            newObj.push(x);
-        }
-    } else if (type === "[object Object]") {
-        newObj = {};
-        Object.keys(obj).forEach(function(prop) {
-            var type = Object.prototype.toString.call(obj[prop]);
-            if (type === "[object String]") {
-                // replace all templates in a string
-                newObj[prop] = replaceTemplatesInString(ctx, obj[prop]);
-            } else if (type === "[object Object]" || type === "[object Array]") {
-                // recurse
-                newObj[prop] = expandEmbeddedTemplates(ctx, obj[prop]);
-            } else {
-                // no replacement
-                newObj[prop] = obj[prop];
-            }
+        return obj.replace(/{(\w+)}/g, (match, key) => {
+            return context.state.extracts[key] || match;
         });
     }
-    return newObj;
+    if (type === "[object Array]") {
+        return obj.map(item => expandEmbeddedTemplates(context, item));
+    }
+    if (type === "[object Object]") {
+        const newObj = {};
+        for (const prop in obj) {
+            if (obj.hasOwnProperty(prop)) {
+                newObj[prop] = expandEmbeddedTemplates(context, obj[prop]);
+            }
+        }
+        return newObj;
+    }
+    return obj;
 }
 
 
 // ==================================================================
 
-function invokeOneRequest(context) {
-    var re = new RegExp('(.*){(.+)}(.*)'),
-        state = context.state,
-        job = context.job,
-        sequence = job.sequences[state.sequence],
-        req = sequence.requests[state.request],
-        url = req.url || req.pathSuffix,
-        method = req.method,
-        match = re.exec(url),
-        actualPayload,
-        headers = (job.defaultProperties && job.defaultProperties.headers) ? job.defaultProperties.headers : {},
-        reqOptions = {
-            headers: copyHash(headers)
-        }, // must use a copy here
-        p = q.resolve(context);
+async function invokeOneRequest(context) {
+    const { state, job } = context;
+    const sequence = job.sequences[state.sequence];
+    const req = sequence.requests[state.request];
 
-    log.write(4, job.id + ' invokeOneRequest');
+    log.write(4, `${job.id} invokeOneRequest`);
 
-    // 1. delay as appropriate
     if (req.delayBefore) {
-        p = p.then(function(ctx) {
-            var deferredPromise = q.defer(),
-                t = resolveNumeric(req.delayBefore);
-            setTimeout(function() {
-                deferredPromise.resolve(ctx);
-            }, t);
-            return deferredPromise.promise;
-        });
+        const delay = Number(req.delayBefore);
+        if (!isNaN(delay)) {
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
     }
 
-    // 2. run any imports.
+    // Process imports
     if (req.imports && req.imports.length > 0) {
-        p = p.then(function(ctx) {
-            var imp, i, L;
-            // cache the eval'd import functions
-            for (i = 0, L = req.imports.length; i < L; i++) {
-                imp = req.imports[i];
-                if (!imp.compiledFn) {
-                    log.write(5, 'eval: ' + imp.fn);
-                    imp.compiledFn = eval('(' + imp.fn + ')');
-                }
-                log.write(5, imp.description);
-                // actually invoke the compiled fn
-                try {
-                    ctx.state.extracts[imp.valueRef] = imp.compiledFn(ctx.state.extracts);
-                    log.write(5, imp.valueRef + ':=' + JSON.stringify(ctx.state.extracts[imp.valueRef]));
-                } catch (exc1) {
-                    ctx.state.extracts[imp.valueRef] = null;
-                    log.write(5, imp.valueRef + ':= null (exception: ' + exc1 + ')');
-                }
+        for (const imp of req.imports) {
+            if (generators[imp.generator]) {
+                const args = imp.args || [];
+                state.extracts[imp.valueRef] = generators[imp.generator](...args);
+                log.write(5, `Generated ${imp.valueRef} := ${state.extracts[imp.valueRef]}`);
             }
-            return ctx;
-        });
+        }
     }
 
-    // 3. evaluate the url path if required.
-    if (match) {
-        // The url includes at least one template.
-        // Must do replacements within the promise chain.
-        p = p.then(function(ctx) {
-            // there may be multiple templates; must evaluate all of them
-            var v = url;
-            for (; match && v; match = re.exec(v)) {
-                v = evalTemplate(ctx, match[2]);
-                v = (v !== null) ? (match[1] + v + match[3]) : null;
-            }
-            url = v ? v : "";
-            return ctx;
-        });
-    }
-
-    // 4. conditionally set additional headers for this request.
-    if (req.headers) {
-        p = p.then(function(ctx) {
-            Object.keys(req.headers).forEach(function(hdr) {
-                var value = req.headers[hdr],
-                    match = re.exec(value);
-                if (match) {
-                    // replace all templates until done
-                    for (; match; match = re.exec(value)) {
-                        value = match[1] + evalTemplate(ctx, match[2]) + match[3];
-                    }
-                } else {
-                    value = req.headers[hdr];
-                }
-                log.write(5, 'Header ' + hdr + ': ' + maskToken(value));
-                reqOptions.headers[hdr.toLowerCase()] = value;
-            });
-
-            return ctx;
-        });
-    }
-
-    // 5. actually do the http call, and run the subsequent extracts
-    p = p.then(function(ctx) {
-        var deferredPromise = q.defer(),
-            city,
-            method = (req.method) ? expandEmbeddedTemplates(ctx, req.method) : "get",
-            respCallback = function(e, httpResp, body) {
-                var i, L, ex, obj, aIndex;
-                gStatus.nRequests++;
-                if (e) {
-                    log.write(2, e);
-                } else {
-                    log.write(2, "==> " + httpResp.statusCode);
-                    // keep a count of status codes
-                    aIndex = httpResp.statusCode + '';
-                    if (gStatus.responseCounts.hasOwnProperty(aIndex)) {
-                        gStatus.responseCounts[aIndex]++;
-                    } else {
-                        gStatus.responseCounts[aIndex] = 1;
-                    }
-                    gStatus.responseCounts.total++;
-                    if (req.extracts && req.extracts.length > 0) {
-                        // cache the eval'd extract functions
-                        // if ( ! ctx.state.extracts) { ctx.state.extracts = {}; }
-                        for (i = 0, L = req.extracts.length; i < L; i++) {
-                            ex = req.extracts[i];
-                            if (!ex.compiledFn) {
-                                log.write(6, 'eval: ' + ex.fn);
-                                ex.compiledFn = eval('(' + ex.fn + ')');
-                            }
-                            log.write(6, ex.description);
-                            // actually invoke the compiled fn
-                            try {
-                                // sometimes the body is already parsed into an object?
-                                obj = Object.prototype.toString.call(body);
-                                if (obj === '[object String]') {
-                                    try {
-                                        obj = JSON.parse(body);
-                                    } catch (exc1) {
-                                        // possibly it was not valid json
-                                        obj = null;
-                                    }
-                                } else {
-                                    obj = body;
-                                }
-                                ctx.state.extracts[ex.valueRef] = ex.compiledFn(obj, httpResp.headers, ctx.state.extracts);
-                                log.write(5, ex.valueRef + ':=' + JSON.stringify(ctx.state.extracts[ex.valueRef]));
-                            } catch (exc1) {
-                                ctx.state.extracts[ex.valueRef] = null;
-                                log.write(5, ex.valueRef + ':= null (exception: ' + exc1 + ')');
-                            }
-                        }
-                    }
-                }
-                ctx.state.request++;
-                deferredPromise.resolve(ctx);
-            };
-
-        reqOptions.method = method;
-        reqOptions.timeout = globalTimeout;
-        reqOptions.followRedirects = false;
-
-        if (isUrl.test(url)) {
-            // if it is a complete URL, use it.
-            reqOptions.uri = url;
-        } else if (job.defaultProperties.port) {
-            // Url.parse (used by slimhttpclient) is sort of broken.  if the
-            // URL specifies the standard port (eg 80 for http), then the Url
-            // gets parsed strangely. Therefore, clients must include the port
-            // only if it is non-standard.
-            reqOptions.uri =
-                job.defaultProperties.scheme + '://' +
-                job.defaultProperties.host;
-
-            if (((job.defaultProperties.port !== 80) &&
-                    (job.defaultProperties.scheme.toLowerCase() === 'http')) ||
-                ((job.defaultProperties.port !== 443) &&
-                    (job.defaultProperties.scheme.toLowerCase() === 'https'))) {
-                reqOptions.uri += ':' + job.defaultProperties.port;
-            }
-
-            reqOptions.uri += url;
-        } else {
-            reqOptions.uri =
-                job.defaultProperties.scheme + '://' + job.defaultProperties.host + url;
-        }
-
-        // var parsedUrl = Url.parse(reqOptions.uri);
-        // log.write('parsed URL :' + JSON.stringify(parsedUrl, null, 2));
-
-        if (job.hasOwnProperty('contrivedIp') && job.contrivedIp) {
-            //reqOptions.headers['x-random-city'] = job.chosenCity;
-            reqOptions.headers['x-forwarded-for'] = job.contrivedIp;
-        } else {
-            log.write(5, 'no contrived IP');
-        }
-
-        if (job.hasOwnProperty('contrivedUserAgent') && job.contrivedUserAgent) {
-            //reqOptions.headers['x-random-city'] = job.chosenCity;
-            reqOptions.headers['User-Agent'] = job.contrivedUserAgent;
-        } else {
-            log.write(5, 'no contrived User Agent');
-        }
-
-        log.write(3, method.toUpperCase() + ' ' + reqOptions.uri);
-
-        if (method === "post" || method === "put") {
-            log.write(3, "payload = " + req.payload);
-            //actualPayload = expandEmbeddedTemplates(ctx, req.payload);
-            actualPayload = req.payload; //dont use templating on JSON payloads
-
-            var t2 = Object.prototype.toString.call(actualPayload);
-
-
-            if (t2 == '[object String]') {
-                reqOptions.body = actualPayload;
-                // set header explicitly if not already set
-                if (!reqOptions.headers['content-type']) {
-                    reqOptions.headers['content-type'] = 'application/x-www-form-urlencoded';
-                }
-            } else {
-                // in this case the content-type header gets set implicitly by the library
-                reqOptions.json = actualPayload;
-            }
-            request(reqOptions, respCallback);
-        } else if (method === "get" || method === "delete") {
-            request(reqOptions, respCallback);
-        } else {
-            assert.fail(r.method, "get|post|put|delete", "unsupported method", "<>");
-        }
-        return deferredPromise.promise;
+    // Resolve URL and headers with templating
+    const url = expandEmbeddedTemplates(context, req.url || req.pathSuffix);
+    const headers = expandEmbeddedTemplates(context, {
+        ...(job.defaultProperties?.headers || {}),
+        ...(req.headers || {})
     });
 
-    return p;
+    if (job.contrivedIp) {
+        headers['x-forwarded-for'] = job.contrivedIp;
+    }
+    if (job.contrivedUserAgent) {
+        headers['User-Agent'] = job.contrivedUserAgent;
+    }
+
+    const reqOptions = {
+        method: (req.method || 'get').toLowerCase(),
+        timeout: globalTimeout,
+        headers,
+        validateStatus: () => true // Handle all status codes in the response
+    };
+
+    if (isUrl.test(url)) {
+        reqOptions.url = url;
+    } else {
+        const { scheme, host, port } = job.defaultProperties;
+        const portString = (port && port !== 80 && port !== 443) ? `:${port}` : '';
+        reqOptions.url = `${scheme}://${host}${portString}${url}`;
+    }
+
+    if (reqOptions.method === 'post' || reqOptions.method === 'put') {
+        reqOptions.data = expandEmbeddedTemplates(context, req.payload);
+        if (!headers['content-type']) {
+            if (typeof reqOptions.data === 'object') {
+                headers['content-type'] = 'application/json';
+            } else {
+                headers['content-type'] = 'application/x-www-form-urlencoded';
+            }
+        }
+    }
+
+    log.write(3, `${reqOptions.method.toUpperCase()} ${reqOptions.url}`);
+    Object.entries(headers).forEach(([key, value]) => log.write(7, `  ${key}: ${maskToken(value)}`));
+
+    try {
+        const httpResp = await require('axios')(reqOptions);
+        gStatus.nRequests++;
+        const statusCodeStr = String(httpResp.status);
+        gStatus.responseCounts[statusCodeStr] = (gStatus.responseCounts[statusCodeStr] || 0) + 1;
+        gStatus.responseCounts.total++;
+        log.write(2, `==> ${httpResp.status}`);
+
+        if (req.extracts && req.extracts.length > 0) {
+            for (const ex of req.extracts) {
+                let sourceData;
+                if (ex.source === 'body') {
+                    sourceData = httpResp.data;
+                } else if (ex.source === 'headers') {
+                    sourceData = httpResp.headers;
+                }
+
+                if (sourceData) {
+                    const result = JSONPath({ path: ex.path, json: sourceData, wrap: false });
+                    if (result) {
+                        state.extracts[ex.valueRef] = result;
+                        log.write(5, `Extracted ${ex.valueRef} := ${JSON.stringify(result)}`);
+                    } else {
+                        log.write(5, `JSONPath for ${ex.valueRef} returned no result for path: ${ex.path}`);
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        log.write(0, `Request failed: ${e.message}`);
+        gStatus.lastError = { message: e.stack.toString(), time: new Date().toString() };
+    }
+    state.request++;
+    return context;
 }
 
 // ==================================================================
@@ -829,145 +545,78 @@ function setInitialContext(ctx) {
 
 // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-function runJob(context) {
-    //console.log("######## NEW JOB RUNNING #######")
+async function runJob(context) {
+    if (gStatus.status !== 'running') {
+        log.write(2, 'Job status is not "running", halting execution.');
+        return;
+    }
 
-    if (gStatus.status != "stopped")
-    {
-    var state = context.state,
-        job = context.job,
-        p, sequence;
+    const { job, state } = context;
+    log.write(3, `runJob: S ${state.sequence + 1}/${state.S}, I ${state.iteration + 1}/${state.I[state.sequence]}, R ${state.request + 1}/${state.R}`);
 
-    // This is an unrolled version of a 3-leel-deep nested loop
-    if (state.request === state.R) {
+    // If first request of first iteration of first sequence, contrive data
+    if (state.sequence === 0 && state.iteration === 0 && state.request === 0) {
+        if (job.ipServiceUrl) {
+          context = await contriveDataFromUrl(job.ipServiceUrl, context, 'contrivedIp');
+        }
+        if (job.userAgentServiceUrl) {
+          context = await contriveDataFromUrl(job.userAgentServiceUrl, context, 'contrivedUserAgent');
+        }
+    }
+
+    await invokeOneRequest(context);
+
+    // Check if sequence/iteration is complete and move to the next
+    if (state.request >= state.R) {
         state.request = 0;
         state.iteration++;
-        log.write(3, 'runJob: ++Iteration ' + state.iteration);
-        return q.resolve(context).then(runJob);
-    }
-    if ((typeof state.I[state.sequence] === "undefined") && state.sequence < state.S) {
-        log.write(5, 'runJob: resolveNumeric(' + job.sequences[state.sequence].iterations + ')');
-        state.I[state.sequence] = resolveNumeric(job.sequences[state.sequence].iterations);
-        log.write(5, 'runJob: state.I[' + state.sequence + ']= ' + state.I[state.sequence]);
-    }
-    if (state.iteration >= state.I[state.sequence]) {
-        state.iteration = 0;
-        state.sequence++;
-        log.write(3, 'runJob: ++Sequence ' + state.sequence);
-        return q.resolve(context).then(runJob, trackFailure);
-    }
-    if (state.sequence === state.S) {
-        // No more work to do. Terminate this sequence.
-        state.sequence = 0;
-        log.write(3, 'runJob: done');
-        return q(context).then(setWakeup, trackFailure);
+        if (state.iteration >= state.I[state.sequence]) {
+            state.iteration = 0;
+            state.sequence++;
+        }
     }
 
-    // Need to verify that all properties are valid.
-    // Sometimes they are not due to intermittent data retrieval errors.
-    // In which case, just sleep and try again at next interval.
-    if (!(job.sequences && job.sequences.length && (state.sequence < job.sequences.length) &&
-            job.sequences[state.sequence].requests && job.sequences[state.sequence].requests.length)) {
-        return q.resolve(context)
-            .then(function(c) {
-                log.write(1, 'state error');
-                return c;
-            })
-            .then(setWakeup);
+    // If all sequences are done, schedule next run
+    if (state.sequence >= state.S) {
+        setWakeup(context);
+        return;
     }
 
-    // set and log counts
-    state.S = job.sequences.length;
+    // Otherwise, continue the job
     state.R = job.sequences[state.sequence].requests.length;
-    if (!state.I[state.sequence]) {
-        state.I[state.sequence] = resolveNumeric(job.sequences[state.sequence].iterations);
-    }
-    log.write(3, 'R ' + (state.request + 1) + '/' + state.R +
-        ' I ' + (state.iteration + 1) + '/' + state.I[state.sequence] +
-        ' S ' + (state.sequence + 1) + '/' + state.S);
-
-
-    // if we arrive here we're doing a request, implies an async call
-    p = q.resolve(context);
-
-    // generate a random IP address if necessary
-    if (state.request === 0 && state.iteration === 0 && state.sequence === 0) {
-        if (!job.hasOwnProperty('geoDistribution') || job.geoDistribution == 1) {
-            if (!globals.citySelector) {
-                //p = p.then(retrieveCities, trackFailure); //do not get cities anymore
-            }
-            p = p.then(contriveIpAddress, trackFailure);
-            p = p.then(contriveUserAgent, trackFailure);
-            // Upon failure, no job.contrivedIp gets set in context.
-            // This is ok, though. We can still continue.
-        } else {
-            p = p.then(function(ctx) {
-                log.write(3, 'no geo distribution');
-            });
-        }
-    }
-
-    // do the call
-    p = p.then(invokeOneRequest, trackFailure);
-
-    // sleep if necessary
-    sequence = job.sequences[state.sequence];
-    if (state.request === 0 && state.iteration !== 0) {
-        if (sequence.delayBetweenIterations) {
-            p = p.then(function(ctx) {
-                var deferredPromise = q.defer(),
-                    t = resolveNumeric(sequence.delayBetweenIterations);
-                setTimeout(function() {
-                    deferredPromise.resolve(ctx);
-                }, t);
-                return deferredPromise.promise;
-            });
-        }
-    }
+    state.I[state.sequence] = state.I[state.sequence] || Number(job.sequences[state.sequence].iterations) || 1;
     
-      return p.then(runJob);
-    }
+    // Use setImmediate to avoid deep call stacks for very fast requests
+    setImmediate(() => runJob(context));
 }
 
+
 function initializeJobRun(context) {
-    var now = (new Date()).valueOf(),
-        // initialize context for running
-        newState = {
-            state: 'run',
-            sequence: 0,
-            S: context.job.sequences.length,
-            request: 0,
-            R: context.job.sequences[0].requests.length,
-            iteration: 0,
-            I: [],
-            extracts: copyHash(context.job.initialContext),
-            start: now
-        };
+    const { job } = context;
+    const now = new Date();
 
-    gStatus.jobId = context.job.id || "-none-";
-    gStatus.description = context.job.description || "-none-";
-    gStatus.loglevel = context.job.loglevel || gDefaultLogLevel;
-
-    // on initial startup, put the loglevel into the cache
-    //cache.put(gLoglevelCacheKey, '' + gStatus.loglevel, 18640000, function(e) {});
-
-    // and put the run status into the cache as well.
-    // (deploy implies start running)
-    //cache.put(gStatusCacheKey, "running", 8640000, function(e){});
-
-    // if (gStatus.status == "pending-stop") {
-    //   log.write(gStatus.jobId + ' no launch - pending stop');
-    //   gStatus.status = "stopped";
-    //   return context;
-    // }
-
-    // launch the loop
-    gStatus.status = "running";
+    const newState = {
+        sequence: 0,
+        S: job.sequences.length,
+        request: 0,
+        R: job.sequences[0].requests.length,
+        iteration: 0,
+        I: [],
+        extracts: copyHash(job.initialContext) || {},
+        start: now.valueOf()
+    };
+    newState.I[0] = Number(job.sequences[0].iterations) || 1;
 
     context.state = newState;
 
-    return q(context)
-        .then(runJob);
+    gStatus.status = 'running';
+    gStatus.jobId = job.id || '-none-';
+    gStatus.description = job.description || '-none-';
+
+    runJob(context).catch(e => {
+        log.write(0, `Unhandled error in runJob: ${e}`);
+        log.write(0, e.stack);
+    });
 }
 
 function checkStatus(){
@@ -987,369 +636,127 @@ function startJob(context){
 }
 
 function setWakeup(context) {
-    var job = context.job,
-        jobid = job.id,
-        now = new Date(),
-        wakeTime,
-        currentHour = now.getHours(),
-        nextHour, currentMinute, hourFraction,
-        currentDayOfWeek = now.getDay(),
-        durationOfLastRun = now - context.state.start,
-        runsPerHour = 0,
-        sleepTimeInMs;
+    const { job } = context;
+    const now = new Date();
+    const durationOfLastRun = now - context.state.start;
 
     log.write(3, 'setWakeup');
     gStatus.nCycles++;
     gStatus.times.lastRun = now.toString();
+    gStatus.durationOfLastRunInMs = durationOfLastRun;
 
-    if (job.initialContext.invocationsPerHour) {
-        job.invocationsPerHour = job.initialContext.invocationsPerHour;
-        // We want to figure out how long to sleep, in order to
-        // reach the configured load target. First, let's figure out
-        // how many runs per hour the tool should make, according to
-        // linear interpolation betwen the "invocationsPerHour" figures.
-        // Interpolating makes the "by minute" graph smoother.
-        if (currentHour < 0 || currentHour > 23) {
-            currentHour = 0;
-        }
-        nextHour = (currentHour == 23) ? 0 : (currentHour + 1);
+    const runsPerHour = job.runsPerHour || defaultRunsPerHour;
+    const g = new Gaussian(oneHourInMs / runsPerHour);
+    let sleepTimeInMs = Math.floor(g.next()) - durationOfLastRun;
 
-        // If one of the invocationsPerHour figures is non-zero, we can interpolate.
-        if (job.invocationsPerHour[currentHour] || job.invocationsPerHour[nextHour]) {
-            runsPerHour = job.invocationsPerHour[currentHour];
-            currentMinute = now.getMinutes(); // 0 <= x <= 59
-            hourFraction = (currentMinute + 1) / 60;
-            runsPerHour += hourFraction * (job.invocationsPerHour[nextHour] - job.invocationsPerHour[currentHour]);
-        }
-    }
-
-    // apply default if necessary
-    runsPerHour = runsPerHour || defaultRunsPerHour;
-    log.write(5, jobid + ' ' + runsPerHour + ' initial runs per hour');
-
-    // load variation by day of week
-    // if (job.variationByDayOfWeek &&
-    //     job.variationByDayOfWeek.length &&
-    //     job.variationByDayOfWeek.length == 7 &&
-    //     job.variationByDayOfWeek[currentDayOfWeek] &&
-    //     job.variationByDayOfWeek[currentDayOfWeek] > 0 &&
-    //     job.variationByDayOfWeek[currentDayOfWeek] <= 10) {
-    //   log.write(5, jobid + ' variation: ' + job.variationByDayOfWeek[currentDayOfWeek]);
-    //   runsPerHour = Math.floor(runsPerHour * job.variationByDayOfWeek[currentDayOfWeek]);
-    // }
-
-    if (job.variationByDayOfWeek) {
-        var vtype = Object.prototype.toString.call(job.variationByDayOfWeek);
-        if (vtype === "[object Array]") {
-            if (job.variationByDayOfWeek.length &&
-                job.variationByDayOfWeek.length == 7 &&
-                job.variationByDayOfWeek[currentDayOfWeek] &&
-                job.variationByDayOfWeek[currentDayOfWeek] > 0 &&
-                job.variationByDayOfWeek[currentDayOfWeek] <= 10) {
-                log.write(5, jobid + ' variation: ' + job.variationByDayOfWeek[currentDayOfWeek]);
-                runsPerHour = Math.floor(runsPerHour * job.variationByDayOfWeek[currentDayOfWeek]);
-            } else {
-                log.write(2, jobid + ' variationByDayOfWeek seems wrong: ' + dayName);
-            }
-        } else if (vtype === "[object Object]") {
-            var dayName = dayNumberToName(currentDayOfWeek);
-            if (dayName >= 0 &&
-                job.variationByDayOfWeek[dayName] > 0 &&
-                job.variationByDayOfWeek[dayName] <= 10) {
-                log.write(5, jobid + ' variation: ' + job.variationByDayOfWeek[dayName]);
-                runsPerHour = Math.floor(runsPerHour * job.variationByDayOfWeek[dayName]);
-            } else {
-                log.write(2, jobid + ' variationByDayOfWeek seems wrong: ' + dayName);
-            }
-        } else {
-            //neither an array nor a hash.
-            log.write(2, jobid + ' variationByDayOfWeek seems wrong');
-        }
-    }
-
-    runsPerHour = Math.floor(runsPerHour);
-
-    log.write(5, jobid + ' duration of last run: ' + durationOfLastRun);
-
-    // now, figure out how long to sleep, given the target number of runs per hour.
-    var g = new Gaussian(oneHourInMs / runsPerHour);
-    sleepTimeInMs = Math.floor(g.next()) - durationOfLastRun;
-
-    // default the sleep time
     if (sleepTimeInMs < minSleepTimeInMs) {
         sleepTimeInMs = minSleepTimeInMs;
     }
 
-    log.write(4, jobid + ' ' + runsPerHour + ' actual runs per hour');
-    wakeTime = new Date(now.valueOf() + sleepTimeInMs);
-    log.write(2, jobid + ' sleep ' + sleepTimeInMs + 'ms, wake at ' +
-        wakeTime.toString().substr(16, 8));
+    const wakeTime = new Date(Date.now() + sleepTimeInMs);
+    log.write(2, `${job.id} sleep ${sleepTimeInMs}ms, wake at ${wakeTime.toTimeString().substr(0, 8)}`);
 
-    // for diagnostics tracking
-    gStatus.durationOfLastRunInMs = durationOfLastRun;
     gStatus.currentRunsPerHour = runsPerHour;
     gStatus.status = "waiting";
     gStatus.times.wake = wakeTime.toString();
 
-    // now, sleep. On wakeup, either run... or sleep again.
-    setTimeout(function() {
-        log.write(2, jobid + ' awake');
-        delete gStatus.times.wake;
-
-        /*
-        cache.get(gLoglevelCacheKey, function(e, value) {
-          if (e) {
-            log.write(2, jobid + ' cannot retrieve loglevel. ' + e);
-            value = gDefaultLogLevel;
-            log.write(2, jobid + ' using default: ' + value);
-          }
-          else if (typeof value === 'undefined'){
-            value = gDefaultLogLevel;
-            log.write(2, jobid + ' using default loglevel: ' + value);
-          }
-          else {
-            log.write(2, jobid + ' retrieved loglevel: ' + value);
-          }
-          gStatus.loglevel = Math.max(0, Math.min(10, parseInt(value, 10)));
-          cache.get(gStatusCacheKey, function(e, value) {
-            var msg;
-            if (e) {
-              log.write(2, jobid + ' cannot retrieve status, presumed running.');
-            }
-            else {
-              msg = (typeof value === 'undefined') ? 'undefined, ergo running.' : value;
-              log.write(4, jobid + ' cached status: ' + msg);
-            }
-            gStatus.cachedStatus = value || '-none-';
-            if (e || value != "stopped") {
-              // failed to get a value, or value is not stopped
-              q({job:job})
-                .then(initializeJobRun)
-                .done(function(){},
-                      function(e){
-                        log.write(2,'unhandled error: ' + e);
-                        log.write(2, e.stack);
-                      });
-            }
-            else {
-              // value is stopped. Sleep one cycle, then check again.
-              context.state.start = new Date(); // now
-              q(context).then(setWakeup, trackFailure);
-            }
-          });
-        });
-
-        */
-        var value;
-        var e;
-        gStatus.cachedStatus = value || '-none-';
-        if (e || value != "stopped") {
-            // failed to get a value, or value is not stopped
-            q({
-                    job: job
-                })
-                .then(initializeJobRun)
-                .done(function() {},
-                    function(e) {
-                        log.write(2, 'unhandled error: ' + e);
-                        log.write(2, e.stack);
-                    });
-        } else {
-            // value is stopped. Sleep one cycle, then check again.
-            context.state.start = new Date(); // now
-            q(context).then(setWakeup, trackFailure);
+    setTimeout(() => {
+        if (gStatus.status === 'stopped') {
+            log.write(2, 'Job is stopped. Not waking up.');
+            return;
         }
-
+        log.write(2, `${job.id} awake`);
+        delete gStatus.times.wake;
+        initializeJobRun({ job });
     }, sleepTimeInMs);
-    return context;
 }
 
 // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-async function kickoff() {
+const kickoff = async () => {
     try {
-        if (isUrl.test(model))
-        {
-          console.log('config: external');
-          gModel = await retrieveConfigAsync(model);
-          gModel = JSON.parse(gModel);
-        }
-        else{
-          if (fs.existsSync(model)) 
-          {
-            console.log('config: local');
-            gModel = JSON.parse(fs.readFileSync(model, "utf8"));
-          }
-          else
-          {
-            console.log("cannot load local configuration: " + model)
-          }
-      }
-        console.log("Loaded the following model:\n" + JSON.stringify(gModel) + "\n");
+        log.write(2, "Kicking off job...");
+        gModel = await retrieveConfig(argv.config);
+        log.write(3, `Model loaded: ${JSON.stringify(gModel, null, 2)}`);
 
         if (!gModel.id) {
-            throw "you must specify a unique id for the job";
+            throw new Error("Configuration model must have a unique 'id' property.");
         }
-
-        //TODO figure out where to store this data or if we need to
-        gStatusCacheKey = 'runload-status-' + gModel.id;
-        gLoglevelCacheKey = 'runload-loglevel-' + gModel.id;
-        gStatus.statusCacheKey = gStatusCacheKey;
-        gStatus.loglevelCacheKey = gLoglevelCacheKey;
-
-        q(gModel)
-            //.then(reportModel)
-            .then(setInitialContext)
-            .then(initializeJobRun)
-            .done(function() {}, function(e) {
-                log.write(2, 'unhandled error: ' + e);
-                log.write(2, e.stack);
-            });
-
-    } catch (exc1) {
-        console.log("Exception:" + exc1);
-        console.log(exc1.stack);
+        initializeJobRun({ job: gModel });
+    } catch (e) {
+        log.write(0, `FATAL: ${e.message}`);
+        log.write(0, e.stack);
+        process.exit(1);
     }
-}
+};
 
 // =======================================================
 // API Endpoints
 // =======================================================
 
-app.use(express.urlencoded());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-app.get('/status', function(request, response) {
-    response.header('Content-Type', 'application/json');
-    response.send(200, "up");
+app.get('/status', (req, res) => {
+    gStatus.times.current = new Date().toString();
+    res.status(200).json(gStatus);
 });
 
-app.get('/reload', function(request, response) {
-
-    try {
-        stopJob();
-        startJob();
-        response.send(200, "Loaded new config...");
-    } catch (e) {
-        response.send(500, "Unsuccessful reload: " + e);
+const stopJob = () => {
+    if (gStatus.status !== 'stopped') {
+        log.write(1, 'Stopping service...');
+        gStatus.status = 'stopped';
     }
-});
+};
 
-app.get('/stop', function(request, response) {
-
-    try {
-        stopJob();
-        response.send(200, "Stopping the service");
-    } catch (e) {
-        response.send(500, "Unsuccessful stop: " + e);
+const startJob = () => {
+    if (gStatus.status === 'stopped') {
+        log.write(1, 'Starting service...');
+        gStatus.status = 'initializing'; // Will be set to 'running' by initializeJobRun
+        initializeJobRun({ job: gModel });
     }
-});
+};
 
-app.get('/start', function(request, response) {
+app.post('/control', (req, res) => {
+    const action = req.body.action || req.query.action;
+    log.write(2, `Control action received: ${action}`);
 
-    try {
-        startJob();
-        response.send(200, "Starting the job");
-    } catch (e) {
-        response.send(500, "Unsuccessful stop: " + e);
-    }
-});
-
-//we can probably remove this
-app.post('/control', function(request, response) {
-    var payload,
-        // post body parameter, or query param
-        action = request.body.action || request.query.action,
-        loglevel = request.body.loglevel || request.query.loglevel,
-        putCallback = function(e) {
-            /*cache.get(gStatusCacheKey, function(e, value) {
-              if (e) {
-                payload.error = true;
-                payload.cacheException = e.toString();
-                response.send(500, JSON.stringify(payload, null, 2) + "\n");
-              }
-              else {
-                payload.cachedStatus = value;
-                response.send(200, JSON.stringify(payload, null, 2) + "\n");
-              }
-            });
-            */
-        };
-
-    response.header('Content-Type', 'application/json');
-    payload = copyHash(gStatus);
-    payload.times.current = (new Date()).toString();
-
-
-    if (action != "stop" && action != "start" && action != "setlog") {
-        payload.error = "unsupported request (action)";
-        response.send(400, JSON.stringify(payload, null, 2) + "\n");
-        return;
-    }
-
-    if (action == "setlog") {
-
-        if (!isNumber(loglevel)) {
-            payload.error = "must pass loglevel";
-            response.send(400, JSON.stringify(payload, null, 2) + "\n");
-            return;
-        }
-        // coerce
-        loglevel = Math.max(0, Math.min(10, parseInt(loglevel, 10)));
-        /*cache.put(gLoglevelCacheKey, '' + loglevel, 18640000, function(e) {
-          if (e) {
-            payload.error = true;
-            payload.cacheException = e.toString();
-            response.send(500, JSON.stringify(payload, null, 2) + "\n");
-          }
-          else {
-            payload.loglevel = loglevel;
-            response.send(200, JSON.stringify(payload, null, 2) + "\n");
-          }
-        });
-        */
-    } else {
-        /*cache.get(gStatusCacheKey, function(e, value) {
-          if (e) {
-            payload.error = true;
-            payload.cacheFail = true;
-            payload.cacheException =  e.toString();
-            response.send(500, JSON.stringify(payload, null, 2) + "\n");
-          }
-          else {
-            payload.cachedStatus = value;
-            if (value == "stopped") {
-              if (action == "stop") {
-                // nothing to do...send a 400.
-                payload.error = "already stopped";
-                response.send(400, JSON.stringify(payload, null, 2) + "\n");
-              }
-              else {
-                // action == start
-                cache.put(gStatusCacheKey, "running", 8640000, putCallback);
-              }
+    switch(action) {
+        case 'stop':
+            stopJob();
+            res.status(200).send('Service stopping.');
+            break;
+        case 'start':
+            startJob();
+            res.status(200).send('Service starting.');
+            break;
+        case 'reload':
+            stopJob();
+            // Give it a moment to halt any running jobs before reloading
+            setTimeout(() => {
+                kickoff().then(() => {
+                    res.status(200).send('Service reloaded with new config.');
+                }).catch(e => {
+                    res.status(500).send(`Failed to reload: ${e.message}`);
+                });
+            }, 500);
+            break;
+        case 'setlog':
+            const level = parseInt(req.body.loglevel || req.query.loglevel, 10);
+            if (!isNaN(level) && level >= 0 && level <= 10) {
+                gStatus.loglevel = level;
+                res.status(200).json({ message: `Log level set to ${level}`, newLevel: level });
+            } else {
+                res.status(400).send('Invalid loglevel. Must be a number between 0 and 10.');
             }
-            else {
-              // is marked "running" now.
-              if (action == "stop") {
-                cache.put(gStatusCacheKey, "stopped", 8640000, putCallback);
-              }
-              else {
-                // action == start
-                // nothing to do, send a 400.
-                payload.error = "already running";
-                response.send(400, JSON.stringify(payload, null, 2) + "\n");
-              }
-            }
-          }
-        });
-        */
+            break;
+        default:
+            res.status(400).send('Invalid action. Use start, stop, reload, or setlog.');
     }
-})
+});
 
-// default behavior
-app.all(/^\/.*/, function(request, response) {
-    response.header('Content-Type', 'application/json');
-    response.send(404, '{ "message" : "This is not the server you\'re looking for." }\n');
+app.all('*', (req, res) => {
+    res.status(404).json({ message: "Endpoint not found." });
 });
 
 port = process.env.PORT || 8080;
@@ -1359,3 +766,10 @@ app.listen(port, function() {
         return kickoff();
     }, 1200);
 });
+
+module.exports = {
+    Gaussian,
+    Log,
+    expandEmbeddedTemplates,
+    generators
+};
